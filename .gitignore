@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+parity-*.md
+parity-*.mp4
+parity-*.webm
