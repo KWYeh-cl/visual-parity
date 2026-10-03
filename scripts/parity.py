@@ -166,7 +166,7 @@ def diff_pair(r, l):
 def run_diff(args):
     manual_map = {}
     if args.map:
-        manual_map = json.load(open(args.map))
+        manual_map = json.load(open(args.map, encoding="utf-8"))
 
     widths = [int(w) for w in args.widths.split(",")] if args.widths else [args.width]
     sections, stdout_rows = [], []
@@ -229,7 +229,7 @@ def run_diff(args):
         report.append("\n**layout warnings**")
         report += [f"- {n}" for n in overflow_notes]
     report += sections
-    with open(args.out, "w") as f:
+    with open(args.out, "w", encoding="utf-8") as f:
         f.write("\n".join(report))
 
     print(f"report: {args.out}")
@@ -275,7 +275,7 @@ def save_video(video, out_path):
 
 
 def run_flow(args):
-    steps = json.load(open(args.steps))
+    steps = json.load(open(args.steps, encoding="utf-8"))
     console_errors, failed_requests, results = [], [], []
 
     video_path, tmpdir = None, None
@@ -354,7 +354,7 @@ def run_flow(args):
         lines += ["\n## console errors/warnings\n"] + [f"- {e}" for e in dict.fromkeys(console_errors)]
     if failed_requests:
         lines += ["\n## failed requests\n"] + [f"- {e}" for e in dict.fromkeys(failed_requests)]
-    with open(args.out, "w") as f:
+    with open(args.out, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
 
     failed = [r for r in results if r[2] == "FAIL"]
@@ -374,19 +374,19 @@ def run_flow(args):
 def selftest():
     """Assert the matcher and differ actually catch a known difference."""
     a = """<html><body><h1>Hello</h1><p class=x>Body copy</p>
-      <ul><li>Item one</li></ul><div>Only in ref</div></body></html>"""
+      <ul><li>Item one</li></ul><div>Only in ref 🎉</div></body></html>"""
     b = """<html><body><h1 style="font-size:40px">Hello</h1>
       <div class=y style="margin-bottom:0">Body copy</div>
       <ul><li style="color:rgb(255,0,0)">Item one</li></ul></body></html>"""
     d = tempfile.mkdtemp()
     for name, html in (("a.html", a), ("b.html", b)):
-        open(os.path.join(d, name), "w").write(html)
+        open(os.path.join(d, name), "w", encoding="utf-8").write(html)
     out = os.path.join(d, "r.md")
     args = argparse.Namespace(
         ref="file://" + os.path.join(d, "a.html"), local="file://" + os.path.join(d, "b.html"),
         map=None, widths=None, width=1440, height=900, wait_selector=None, extra_wait=0, out=out)
     run_diff(args)
-    body = open(out).read()
+    body = open(out, encoding="utf-8").read()
     assert "font-size" in body, "should detect the h1 font-size change"
     assert "color" in body, "should detect the li color change"
     assert "Only in ref" in body, "should report the ref-only element as missing locally"
@@ -395,6 +395,11 @@ def selftest():
 
 
 def main():
+    # Windows consoles default to a legacy codepage (e.g. cp950); page text
+    # echoed to stdout must not crash the run.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
