@@ -215,6 +215,20 @@ python ~/.claude/skills/visual-parity/scripts/parity.py snapshot \
   > 判斷測試：這條斷言重跑一百次結果一樣嗎？不一樣 → 它驗的是手感，不能拿來決定通過或失敗。
 - **錄影**一段只涵蓋一條互動路徑、15 秒內，用 `flow --video`（見上節）。**不要用 `screencapture` 錄互動**——Playwright 派發的是合成事件，macOS 真實指標不會動，錄到的游標停在原地；`screencapture -v` 只在需要判斷掉幀時才用。agent 讀不了影片，唯一觀眾是人。
 
+## 專案驗證入口：scaffold_verify.py
+
+在 app repo 產生 `.claude/skills/verify-<app>/`：啟動／檢查／清理 dev server 的腳本、可搜尋的功能地圖（`features/`），以及每個功能一份 flow（`flows/<id>.json`，底層跑 `parity.py flow`，報告自帶 commit）。
+
+```bash
+python ~/.claude/skills/visual-parity/scripts/scaffold_verify.py --repo <app repo> \
+  [--host auth.example.test --entry /auth/login --port 8443 --start "npm run dev -- --port $PORT"]
+```
+
+沒給的值會從 `package.json`、`vite.config.*`、`next.config.*` 偵測，猜的會標 `GUESSED`。產生後：
+
+- `scripts/launch.sh` → `scripts/doctor.sh` → `scripts/verify.sh <feature-id> [--mutate]` → `scripts/cleanup.sh`
+- `scripts/check-map.sh [--live]` 檢查地圖格式、索引、每個功能都有 flow，`--live` 再確認地圖裡每個路由都回 200。新增或改名頁面時跟著更新地圖，地圖才不會過時。
+
 ## 報告開頭的來源欄位
 
 每份 `.md` 報告開頭與 stdout 都會寫：`commit`（`git rev-parse HEAD`，不在 git repo 裡是 `(not a git repo)`）、`working tree`（clean 或 dirty 與檔案數）、`url`、`run at`。PR 的 `**Verified at:**` 填這裡的 commit；`working tree` 是 dirty 時，證據對應的不是任何一個 commit，要在 `Not verified` 註明。

@@ -183,6 +183,20 @@ python ~/.claude/skills/visual-parity/scripts/parity.py flow --steps steps.json 
 
 ---
 
+## 專案驗證入口：scaffold_verify.py
+
+在 app repo 產生 `.claude/skills/verify-<app>/`：啟動／檢查／清理 dev server 的腳本、可搜尋的功能地圖（`features/`），以及每個功能一份 flow（`flows/<id>.json`，底層跑 `parity.py flow`，報告自帶 commit）。
+
+```bash
+python ~/.claude/skills/visual-parity/scripts/scaffold_verify.py --repo <app repo> \
+  [--host auth.example.test --entry /auth/login --port 8443 --start "npm run dev -- --port $PORT"]
+```
+
+沒給的值會從 `package.json`、`vite.config.*`、`next.config.*` 偵測，猜的會標 `GUESSED`。產生後：
+
+- `scripts/launch.sh` → `scripts/doctor.sh` → `scripts/verify.sh <feature-id> [--mutate]` → `scripts/cleanup.sh`
+- `scripts/check-map.sh [--live]` 檢查地圖格式、索引、每個功能都有 flow，`--live` 再確認地圖裡每個路由都回 200。新增或改名頁面時跟著更新地圖，地圖才不會過時。
+
 ## 報告來源欄位
 
 每份報告開頭與 stdout 都記錄 `commit`、`working tree`（clean／dirty）、比對的 `url` 與執行時間；不在 git repo 內執行時寫 `(not a git repo)`。PR 的 Evidence 用這個 commit 證明「驗的就是要交付的版本」。

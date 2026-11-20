@@ -1,0 +1,5 @@
+[
+  {"action": "goto", "url": "{BASE}__ENTRY__"},
+  {"action": "expect_visible", "selector": "body", "desc": "entry page renders"},
+  {"action": "screenshot", "path": "{EVIDENCE}/home.png"}
+]
