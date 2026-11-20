@@ -163,8 +163,21 @@ python ~/.claude/skills/visual-parity/scripts/parity.py flow \
 - `--video-size WxH`（預設 `1280x720`）同時決定錄影解析度與 viewport。
 - `--video-tail <秒>`（預設 `1`）最後一步跑完後繼續錄的時間，避免收尾的動畫被切掉。
 - **游標預設會畫**（`--no-cursor` 關掉）。Playwright 的 click 是直接派發事件、沒有指標移動，錄出來看不出點了哪裡；開了之後每個 `click`／`fill` 前會先讓游標走到目標中心（約 0.4 秒），按下時有藍色擴散環。要讓 reviewer 看懂互動的是哪個元件就加這個。
-- 影格率是 Playwright screencast 的 **25fps**，判斷「動畫有沒有做對」夠用；要判斷「掉不掉幀」不夠，那種要用 macOS `screencapture -v` 錄 60fps。
+- 影格率是 Playwright screencast 的 **25fps**，判斷「動畫有沒有做對」夠用；要判斷「掉不掉幀」不夠，那種要錄 60fps：macOS 用 `screencapture -v`；Windows 沒有內建等效指令，用 OBS Studio（設定 60 FPS）或 Xbox Game Bar（`Win+Alt+R`，需在設定把影格率調成 60），兩者都沒有就標為「未驗：本機無法錄 60fps」。
 - 影片路徑會同時寫進報告開頭與 stdout。
+
+### --mutate：確認斷言真的會失敗
+
+新寫的 `expect_*` 沒看過它失敗就不算數——它可能在壞掉的頁面上也會過（例如對不存在的 `::after` 斷言 `content: none`）。加 `--mutate`，每個通過的斷言會在一個刻意弄壞的頁面上重跑一次：
+
+| action | 怎麼弄壞 |
+|---|---|
+| `expect_style` `expect_box` | 移除所有 CSS |
+| `expect_text` | 清空元素文字 |
+| `expect_visible` | 隱藏元素 |
+| `expect_focused` | 把 focus 移走 |
+
+弄壞後仍然通過的斷言標為 `INVALID`，寫進報告的 `mutation check` 段落並讓整次執行 exit 1。重跑會從頭執行到該斷言前一步，表單送出之類有副作用的步驟也會再跑一次。交付驗收證據前，新寫的 flow 至少用 `--mutate` 跑一次。
 
 把 flow 的 JSON 存進專案（例如 `e2e/`），下次改版直接重跑，就是回歸測試。
 
@@ -201,6 +214,10 @@ python ~/.claude/skills/visual-parity/scripts/parity.py snapshot \
 - **動畫與轉場不靠肉眼判**，要有定量斷言，用 flow 的 `wait_animations` ＋ `expect_style`／`expect_box`／`emulate` 寫：動畫結束後的最終 computed style 與可見性、`transition-duration`／`animation-name` 確實掛上、`prefers-reduced-motion: reduce` 下確實關閉、轉場前後 bounding box 無非預期位移。
   > 判斷測試：這條斷言重跑一百次結果一樣嗎？不一樣 → 它驗的是手感，不能拿來決定通過或失敗。
 - **錄影**一段只涵蓋一條互動路徑、15 秒內，用 `flow --video`（見上節）。**不要用 `screencapture` 錄互動**——Playwright 派發的是合成事件，macOS 真實指標不會動，錄到的游標停在原地；`screencapture -v` 只在需要判斷掉幀時才用。agent 讀不了影片，唯一觀眾是人。
+
+## 報告開頭的來源欄位
+
+每份 `.md` 報告開頭與 stdout 都會寫：`commit`（`git rev-parse HEAD`，不在 git repo 裡是 `(not a git repo)`）、`working tree`（clean 或 dirty 與檔案數）、`url`、`run at`。PR 的 `**Verified at:**` 填這裡的 commit；`working tree` 是 dirty 時，證據對應的不是任何一個 commit，要在 `Not verified` 註明。
 
 ## 驗收回報格式
 
@@ -242,4 +259,4 @@ python ~/.claude/skills/visual-parity/scripts/parity.py snapshot \
 
 ## 維護
 
-改過 `parity.py` 後跑 `python scripts/parity.py selftest`，會用內建 fixture 驗證配對與 diff 邏輯仍正確。
+改過 `parity.py` 後跑 `python scripts/parity.py selftest`，會用內建 fixture 驗證配對、diff、flow、`--mutate`、snapshot 與報告來源欄位仍正確，並檢查每個子指令與 flow action 都有寫進 README.md 與 SKILL.md（新增 action 卻沒寫文件就會失敗）。

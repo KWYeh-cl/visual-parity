@@ -129,6 +129,41 @@ COLLECT_JS = """
 """
 
 
+def provenance(urls, cwd=None):
+    """Which code and which pages a report is evidence for: commit, tree state, URLs, time."""
+    import datetime
+
+    def git(*a):
+        r = subprocess.run(["git", *a], cwd=cwd, capture_output=True, text=True)
+        return r.stdout.strip() if r.returncode == 0 else None
+
+    sha = git("rev-parse", "HEAD")
+    if sha is None:
+        commit = tree = "(not a git repo)"
+    else:
+        commit = sha
+        dirty = [l for l in (git("status", "--porcelain") or "").splitlines() if l.strip()]
+        tree = f"dirty ({len(dirty)} files changed)" if dirty else "clean"
+    return {
+        "commit": commit,
+        "tree": tree,
+        "urls": [u for u in urls if u],
+        "time": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+    }
+
+
+def provenance_md(prov):
+    return [f"- commit: {prov['commit']}", f"- working tree: {prov['tree']}",
+            f"- url: {', '.join(prov['urls']) or '(none)'}", f"- run at: {prov['time']}"]
+
+
+def print_provenance(prov):
+    if prov["tree"] == "(not a git repo)":
+        print(f"commit: (not a git repo) · {prov['time']}")
+    else:
+        print(f"commit: {prov['commit'][:7]} ({prov['tree']}) · {prov['time']}")
+
+
 def norm(t):
     return re.sub(r"\s+", " ", t or "").strip().lower()
 
@@ -286,7 +321,8 @@ def run_diff(args):
 
         browser.close()
 
-    report = [f"# visual-parity diff\n", f"- ref:   {args.ref}", f"- local: {args.local}",
+    prov = provenance([args.ref, args.local])
+    report = [f"# visual-parity diff\n", *provenance_md(prov), f"- ref:   {args.ref}", f"- local: {args.local}",
               f"- widths: {widths}"]
     if overflow_notes:
         report.append("\n**layout warnings**")
@@ -296,6 +332,7 @@ def run_diff(args):
         f.write("\n".join(report))
 
     print(f"report: {args.out}")
+    print_provenance(prov)
     for w, np_, nd, nm, na, nu in stdout_rows:
         print(f"  {w}px: {np_} matched, {nd} diffs, {nm} missing-locally, "
               f"{na} skipped-ambiguous, {nu} skipped-textless")
@@ -550,10 +587,131 @@ def run_axe(page, step):
     return "\n".join(lines) + "\n", msg
 
 
+FLOW_ACTIONS = (
+    "goto", "click", "fill", "press", "hover", "wait", "wait_animations", "emulate",
+    "expect_text", "expect_visible", "expect_focused", "expect_style", "save_box", "expect_box",
+    "axe", "screenshot",
+)
+
+STRIP_CSS_JS = """() => {
+  for (const s of document.styleSheets) { try { s.disabled = true; } catch (e) {} }
+  document.adoptedStyleSheets = [];
+  for (const el of document.querySelectorAll('[style]')) el.removeAttribute('style');
+}"""
+
+# How each assertion is broken on purpose; an assertion that still passes afterwards checks nothing.
+MUTATIONS = {
+    "expect_style": ("strip all CSS", lambda page, step: page.evaluate(STRIP_CSS_JS)),
+    "expect_box": ("strip all CSS", lambda page, step: page.evaluate(STRIP_CSS_JS)),
+    "expect_text": ("empty the element's text", lambda page, step: page.evaluate(
+        "s => document.querySelectorAll(s).forEach(e => { e.textContent = ''; })", step["selector"])),
+    "expect_visible": ("hide the element", lambda page, step: page.add_style_tag(
+        content=step["selector"] + "{display:none!important;visibility:hidden!important}")),
+    "expect_focused": ("move focus away", lambda page, step: page.evaluate(
+        "() => { document.activeElement && document.activeElement.blur(); document.body.focus(); }")),
+}
+
+
+def exec_step(page, step, i, desc, *, cursor, pos, saved_boxes, axe_sections, timeout=15000):
+    act = step.get("action")
+    if act == "goto":
+        page.goto(step["url"], wait_until="domcontentloaded", timeout=60000)
+        try:
+            page.wait_for_load_state("networkidle", timeout=20000)
+        except Exception:
+            pass
+    elif act == "click":
+        if cursor:
+            glide(page, pos, step["selector"])
+        page.click(step["selector"], timeout=timeout)
+    elif act == "fill":
+        if cursor:
+            glide(page, pos, step["selector"])
+        page.fill(step["selector"], step["value"], timeout=timeout)
+    elif act == "press":
+        page.press(step["selector"], step["key"], timeout=timeout)
+    elif act == "wait":
+        if "ms" in step:
+            page.wait_for_timeout(step["ms"])
+        else:
+            page.wait_for_selector(step["selector"], timeout=step.get("timeout", timeout))
+    elif act == "expect_text":
+        got = page.inner_text(step["selector"], timeout=timeout)
+        assert step["value"] in got, f"expected {step['value']!r} in {got[:120]!r}"
+    elif act == "expect_visible":
+        assert page.is_visible(step["selector"]), "not visible"
+    elif act == "expect_focused":
+        got = page.evaluate(
+            "s => document.activeElement === document.querySelector(s)", step["selector"])
+        assert got, "element is not document.activeElement"
+    elif act == "hover":
+        if cursor:
+            glide(page, pos, step["selector"])
+        page.hover(step["selector"], timeout=timeout)
+    elif act == "emulate":
+        media = {k: step[k] for k in ("reduced_motion", "color_scheme", "media") if k in step}
+        page.emulate_media(**media)
+    elif act == "wait_animations":
+        page.evaluate(WAIT_ANIMATIONS_JS, step.get("selector"))
+    elif act == "expect_style":
+        check_styles(page, step)
+    elif act == "save_box":
+        box = page.evaluate(BOX_JS, step["selector"])
+        if box is None:
+            raise AssertionError(f"no element for {step['selector']}")
+        saved_boxes[step["as"]] = box
+    elif act == "expect_box":
+        check_box(page, step, saved_boxes)
+    elif act == "axe":
+        section, blocking = run_axe(page, step)
+        axe_sections.append(f"\n## axe — step {i}: {desc}\n\n" + section)
+        assert not blocking, blocking
+    elif act == "screenshot":
+        page.screenshot(path=step["path"], full_page=step.get("full_page", True))
+    else:
+        raise ValueError(f"unknown action {act!r}; known: {', '.join(FLOW_ACTIONS)}")
+
+
+def describe(step):
+    act = step.get("action")
+    return step.get("desc", f"{act} {step.get('selector') or step.get('url') or ''}")
+
+
+def mutation_check(browser, steps, results):
+    """Replay up to each passing assertion, break the page the way that assertion should notice, rerun it."""
+    rows = []
+    for i, desc, verdict, _ in results:
+        step = steps[i]
+        act = step.get("action")
+        if verdict != "PASS" or act not in MUTATIONS:
+            continue
+        how, mutate = MUTATIONS[act]
+        ctx = browser.new_context(ignore_https_errors=True)
+        page = ctx.new_page()
+        saved, sink = {}, []
+        try:
+            for j in range(i):
+                if steps[j].get("action") in ("screenshot", "axe"):
+                    continue
+                exec_step(page, steps[j], j, describe(steps[j]), cursor=False, pos=[0.0, 0.0],
+                          saved_boxes=saved, axe_sections=sink)
+            mutate(page, step)
+            exec_step(page, step, i, desc, cursor=False, pos=[0.0, 0.0], saved_boxes=saved,
+                      axe_sections=sink, timeout=3000)
+            rows.append((i, desc, how, "INVALID", "still passes on the broken page"))
+        except AssertionError as e:
+            rows.append((i, desc, how, "valid", str(e)[:160]))
+        except Exception as e:
+            rows.append((i, desc, how, "valid", f"errors on the broken page: {str(e)[:140]}"))
+        finally:
+            ctx.close()
+    return rows
+
+
 def run_flow(args):
     steps = json.load(open(args.steps, encoding="utf-8"))
     console_errors, failed_requests, results = [], [], []
-    saved_boxes, axe_sections = {}, []
+    saved_boxes, axe_sections, mutations = {}, [], []
 
     video_path, tmpdir = None, None
 
@@ -576,65 +734,10 @@ def run_flow(args):
         page.on("requestfailed", lambda r: failed_requests.append(f"{r.method} {r.url} — {r.failure}"[:300]))
 
         for i, step in enumerate(steps):
-            act = step.get("action")
-            desc = step.get("desc", f"{act} {step.get('selector') or step.get('url') or ''}")
+            desc = describe(step)
             try:
-                if act == "goto":
-                    page.goto(step["url"], wait_until="domcontentloaded", timeout=60000)
-                    try:
-                        page.wait_for_load_state("networkidle", timeout=20000)
-                    except Exception:
-                        pass
-                elif act == "click":
-                    if args.cursor:
-                        glide(page, pos, step["selector"])
-                    page.click(step["selector"], timeout=15000)
-                elif act == "fill":
-                    if args.cursor:
-                        glide(page, pos, step["selector"])
-                    page.fill(step["selector"], step["value"], timeout=15000)
-                elif act == "press":
-                    page.press(step["selector"], step["key"], timeout=15000)
-                elif act == "wait":
-                    if "ms" in step:
-                        page.wait_for_timeout(step["ms"])
-                    else:
-                        page.wait_for_selector(step["selector"], timeout=step.get("timeout", 15000))
-                elif act == "expect_text":
-                    got = page.inner_text(step["selector"], timeout=15000)
-                    assert step["value"] in got, f"expected {step['value']!r} in {got[:120]!r}"
-                elif act == "expect_visible":
-                    assert page.is_visible(step["selector"]), "not visible"
-                elif act == "expect_focused":
-                    got = page.evaluate(
-                        "s => document.activeElement === document.querySelector(s)", step["selector"])
-                    assert got, "element is not document.activeElement"
-                elif act == "hover":
-                    if args.cursor:
-                        glide(page, pos, step["selector"])
-                    page.hover(step["selector"], timeout=15000)
-                elif act == "emulate":
-                    media = {k: step[k] for k in ("reduced_motion", "color_scheme", "media") if k in step}
-                    page.emulate_media(**media)
-                elif act == "wait_animations":
-                    page.evaluate(WAIT_ANIMATIONS_JS, step.get("selector"))
-                elif act == "expect_style":
-                    check_styles(page, step)
-                elif act == "save_box":
-                    box = page.evaluate(BOX_JS, step["selector"])
-                    if box is None:
-                        raise AssertionError(f"no element for {step['selector']}")
-                    saved_boxes[step["as"]] = box
-                elif act == "expect_box":
-                    check_box(page, step, saved_boxes)
-                elif act == "axe":
-                    section, blocking = run_axe(page, step)
-                    axe_sections.append(f"\n## axe — step {i}: {desc}\n\n" + section)
-                    assert not blocking, blocking
-                elif act == "screenshot":
-                    page.screenshot(path=step["path"], full_page=step.get("full_page", True))
-                else:
-                    raise ValueError(f"unknown action {act!r}")
+                exec_step(page, step, i, desc, cursor=args.cursor, pos=pos,
+                          saved_boxes=saved_boxes, axe_sections=axe_sections)
                 results.append((i, desc, "PASS", ""))
             except Exception as e:
                 results.append((i, desc, "FAIL", str(e)[:300]))
@@ -647,16 +750,25 @@ def run_flow(args):
         ctx.close()  # the video file is only finalized on context close
         if video:
             video_path = save_video(video, args.video)
+        if getattr(args, "mutate", False):
+            mutations = mutation_check(browser, steps, results)
         browser.close()
         if tmpdir:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
-    lines = ["# visual-parity flow\n", f"steps file: {args.steps}\n"]
+    prov = provenance([s.get("url") for s in steps if s.get("action") == "goto"])
+    lines = ["# visual-parity flow\n", *provenance_md(prov), f"- steps file: {args.steps}\n"]
     if video_path:
         lines.append(f"video: {video_path}\n")
     lines += ["| # | step | result | detail |", "|---|---|---|---|"]
     lines += [f"| {i} | {d} | {r} | {m} |" for i, d, r, m in results]
     lines += axe_sections
+    if mutations:
+        lines += ["\n## mutation check\n",
+                  "Each passing assertion was rerun on a deliberately broken page. INVALID means it still "
+                  "passed, so it cannot tell a working page from a broken one.\n",
+                  "| # | assertion | mutation | verdict | detail |", "|---|---|---|---|---|"]
+        lines += [f"| {i} | {d} | {h} | {v} | {m} |" for i, d, h, v, m in mutations]
     if console_errors:
         lines += ["\n## console errors/warnings\n"] + [f"- {e}" for e in dict.fromkeys(console_errors)]
     if failed_requests:
@@ -665,17 +777,23 @@ def run_flow(args):
         f.write("\n".join(lines))
 
     failed = [r for r in results if r[2] == "FAIL"]
+    invalid = [m for m in mutations if m[3] == "INVALID"]
     print(f"report: {args.out}")
+    print_provenance(prov)
     if video_path:
         print(f"video: {video_path}")
     print(f"  {len(results) - len(failed)}/{len(results)} steps passed")
     for i, d, r, m in failed:
         print(f"  FAIL step {i}: {d} — {m}")
+    if mutations:
+        print(f"  mutation check: {len(mutations) - len(invalid)} valid, {len(invalid)} invalid assertions")
+        for i, d, h, v, m in invalid:
+            print(f"  INVALID step {i}: {d} — still passes after '{h}'")
     if console_errors:
         print(f"  {len(set(console_errors))} unique console errors/warnings")
     if failed_requests:
         print(f"  {len(set(failed_requests))} failed requests")
-    return 1 if failed else 0
+    return 1 if failed or invalid else 0
 
 
 FREEZE_CSS = """*,*::before,*::after{animation-duration:0s!important;animation-delay:0s!important;
@@ -814,7 +932,8 @@ def run_snapshot(args):
     sheet.save(args.diff_image)
 
     height_gap = loc_css_h - ref_css_h
-    lines = ["# visual-parity snapshot\n",
+    prov = provenance([args.url])
+    lines = ["# visual-parity snapshot\n", *provenance_md(prov),
              f"- design: {args.ref_image} ({ref.width}x{ref.height}px, {k:.2f}px per CSS px)",
              f"- local:  {args.url}" + (f" `{args.selector}`" if args.selector else " (full page)"),
              f"- viewport: {args.width}px, mode: {'strict' if args.strict else 'anti-alias tolerant'}",
@@ -834,6 +953,7 @@ def run_snapshot(args):
 
     failed = mismatch > args.max_mismatch or abs(height_gap) > args.max_height_diff
     print(f"report: {args.out}")
+    print_provenance(prov)
     print(f"diff image: {args.diff_image}")
     print(f"  mismatch {mismatch:.2f}% (limit {args.max_mismatch}%), "
           f"height design {ref_css_h:.0f}px vs local {loc_css_h:.0f}px")
@@ -864,11 +984,51 @@ def selftest():
     assert "color" in body, "should detect the li color change"
     assert "Only in ref" in body, "should report the ref-only element as missing locally"
     assert "`div`" in body or "margin-bottom" in body, "should match p->div across tag change"
+    assert_provenance(body, "diff")
 
+    selftest_provenance(d)
+    selftest_docs()
     selftest_visual(d)
     selftest_flow(d)
+    selftest_mutate(d)
     selftest_snapshot(d)
     print("\nselftest OK")
+
+
+def assert_provenance(body, what):
+    for field in ("- commit: ", "- working tree: ", "- url: ", "- run at: "):
+        assert field in body, f"{what} report should record {field.strip('- :')}"
+
+
+def selftest_provenance(d):
+    outside = provenance(["https://x"], cwd=d)
+    assert outside["commit"] == "(not a git repo)" == outside["tree"], outside
+    here = os.path.dirname(os.path.abspath(__file__))
+    if subprocess.run(["git", "rev-parse"], cwd=here, capture_output=True).returncode == 0:
+        inside = provenance([], cwd=here)
+        assert re.fullmatch(r"[0-9a-f]{40}", inside["commit"]), inside
+        assert inside["tree"] == "clean" or inside["tree"].startswith("dirty"), inside
+
+
+def doc_sync_problems(root):
+    """Every subcommand and flow action must be named in both README.md and SKILL.md."""
+    import inspect
+    in_code = set(re.findall(r'act == "(\w+)"', inspect.getsource(exec_step)))
+    problems = [f"FLOW_ACTIONS and exec_step disagree: {sorted(in_code ^ set(FLOW_ACTIONS))}"] \
+        if in_code != set(FLOW_ACTIONS) else []
+    sub = next(a for a in build_parser()._actions if isinstance(a, argparse._SubParsersAction))
+    names = [("subcommand", n) for n in sub.choices] + [("flow action", n) for n in FLOW_ACTIONS]
+    for doc in ("README.md", "SKILL.md"):
+        text = open(os.path.join(root, doc), encoding="utf-8").read()
+        problems += [f"{doc} does not mention {kind} `{n}`" for kind, n in names
+                     if not re.search(rf"`{n}`|^#+ {n}\b|parity\.py {n}\b", text, re.M)]
+    return problems
+
+
+def selftest_docs():
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    problems = doc_sync_problems(root)
+    assert not problems, "docs out of sync with the code:\n  " + "\n  ".join(problems)
 
 
 def _write(d, name, html):
@@ -939,6 +1099,34 @@ def selftest_flow(d):
         want = "FAIL" if "must fail" in desc else "PASS"
         assert res == want, f"flow step {i} ({desc}) was {res}, expected {want}"
     assert "image-alt" in open(out, encoding="utf-8").read(), "axe should flag the img without alt"
+    assert_provenance(open(out, encoding="utf-8").read(), "flow")
+
+
+def selftest_mutate(d):
+    url = _write(d, "mutate.html", """<html><head><style>#a{color:rgb(255,0,0)}</style></head>
+      <body><p id=a>hi there</p><input id=q autofocus></body></html>""")
+    steps = [
+        {"action": "goto", "url": url},
+        {"action": "expect_style", "selector": "#a", "styles": {"color": "rgb(255, 0, 0)"}, "desc": "valid style"},
+        {"action": "expect_style", "selector": "#a", "pseudo": "::after", "styles": {"content": "none"},
+         "desc": "always passes"},
+        {"action": "expect_text", "selector": "#a", "value": "hi", "desc": "valid text"},
+        {"action": "expect_visible", "selector": "#a", "desc": "valid visible"},
+        {"action": "click", "selector": "#q"},
+        {"action": "expect_focused", "selector": "#q", "desc": "valid focus"},
+    ]
+    sp = os.path.join(d, "mutate.json")
+    json.dump(steps, open(sp, "w", encoding="utf-8"))
+    out = os.path.join(d, "mutate.md")
+    rc = run_flow(argparse.Namespace(steps=sp, out=out, headless=True, keep_going=True, video=None,
+                                     video_size="1280x720", video_tail=0, cursor=False, mutate=True))
+    body = open(out, encoding="utf-8").read()
+    rows = {r.split(" | ")[1]: r.split(" | ")[3] for r in body.split("## mutation check")[1].splitlines()
+            if re.match(r"^\| \d+ \|", r)}
+    assert rows.get("always passes") == "INVALID", rows
+    for name in ("valid style", "valid text", "valid visible", "valid focus"):
+        assert rows.get(name) == "valid", (name, rows)
+    assert rc == 1, "an invalid assertion must fail the run"
 
 
 def selftest_snapshot(d):
@@ -965,6 +1153,7 @@ def selftest_snapshot(d):
 
     rc, body = snap(a)
     assert rc == 0, "a page should match its own design export at a different scale:\n" + body
+    assert_provenance(body, "snapshot")
     rc, body = snap(b)
     assert rc == 1 and "div#block" in body, "a moved block should fail and be traced to its element:\n" + body
 
@@ -975,6 +1164,21 @@ def main():
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(errors="replace")
+    ap = build_parser()
+    args = ap.parse_args()
+    if args.cmd == "diff":
+        sys.exit(run_diff(args))
+    if args.cmd == "responsive":
+        args.widths, args.width = "375,768,1440", 1440
+        sys.exit(run_diff(args))
+    if args.cmd == "flow":
+        sys.exit(run_flow(args))
+    if args.cmd == "snapshot":
+        sys.exit(run_snapshot(args))
+    selftest()
+
+
+def build_parser():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -1007,6 +1211,7 @@ def main():
     f.add_argument("--video-size", default="1280x720", help="WxH of both the recording and the viewport (default 1280x720)")
     f.add_argument("--video-tail", type=float, default=1.0, help="seconds to keep recording after the last step so trailing animations finish (default 1)")
     f.add_argument("--no-cursor", dest="cursor", action="store_false", default=True, help="disable the synthetic pointer (on by default: it travels to each click/fill target and ripples on press)")
+    f.add_argument("--mutate", action="store_true", help="rerun every passing expect_* on a deliberately broken page; one that still passes is reported INVALID and fails the run")
 
     s = sub.add_parser("snapshot", help="pixel-compare a rendered page or element against a design PNG (e.g. a Figma export)")
     s.add_argument("--ref-image", required=True, help="design PNG, e.g. downloaded from Figma get_screenshot")
@@ -1028,18 +1233,7 @@ def main():
     s.add_argument("--diff-image", default="parity-snapshot.png")
 
     sub.add_parser("selftest", help="verify the matcher/differ still work")
-
-    args = ap.parse_args()
-    if args.cmd == "diff":
-        sys.exit(run_diff(args))
-    if args.cmd == "responsive":
-        args.widths, args.width = "375,768,1440", 1440
-        sys.exit(run_diff(args))
-    if args.cmd == "flow":
-        sys.exit(run_flow(args))
-    if args.cmd == "snapshot":
-        sys.exit(run_snapshot(args))
-    selftest()
+    return ap
 
 
 if __name__ == "__main__":

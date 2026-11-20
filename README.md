@@ -26,11 +26,16 @@ pip install playwright pillow && playwright install chromium
 
 `pillow` 只有 `snapshot` 會用到。axe-core 已放在 `scripts/vendor/`，不用另外裝。
 
+Windows 上 `python` 若指向 Microsoft Store 的空殼，改用 `py`（例如 `py -m pip install playwright pillow`、`py scripts\parity.py selftest`）。
+
 錄影要輸出 MP4 才需要 ffmpeg，選配：
 
 ```bash
-brew install ffmpeg
+brew install ffmpeg            # macOS
+winget install Gyan.FFmpeg     # Windows（或 choco install ffmpeg）
 ```
+
+Windows 裝完要重開終端機讓 `ffmpeg` 進 PATH。
 
 沒裝也不會壞，錄影會自動退回 `.webm` 並在 stdout 提示。
 
@@ -74,12 +79,13 @@ python ~/.claude/skills/visual-parity/scripts/parity.py diff \
   --out   parity-diff.md
 ```
 
-stdout 會回四個數字：
+stdout 會回五個數字：
 
 - `matched` — 成功配對並比對的元素數
 - `diffs` — 屬性落差總數
-- `missing-locally` — 舊頁有、新頁完全沒有的內容，**抓漏掉的區塊看這個**
-- `skipped-ambiguous` — 文字在頁面上重複、無法 1:1 配對而略過。數字大不代表有問題，但代表覆蓋率沒滿
+- `missing-locally` — 舊頁有、新頁完全沒有的內容（含圖片與 icon），**抓漏掉的區塊看這個**
+- `skipped-ambiguous` — 文字或圖檔在頁面上重複、無法 1:1 配對而略過。數字大不代表有問題，但代表覆蓋率沒滿
+- `skipped-textless` — 沒有文字也沒有識別屬性的末端元素（CSS icon、分隔線），未被比對
 
 元素配對順序：先套 `--map` 的手動對照 → 「標籤 + 文字」自動配對 → 「純文字」補配。最後這步是為了吸收 SPA→SSR 造成的標籤變化（例如 `<p>` 變成 `<div>`）。
 
@@ -126,7 +132,20 @@ python ~/.claude/skills/visual-parity/scripts/parity.py flow \
   --steps steps.json --out parity-flow.md
 ```
 
-可用 action：`goto` `click` `fill` `press` `wait` `expect_text` `expect_visible` `expect_focused` `screenshot`。
+可用 action：
+
+| action | 用途 |
+|---|---|
+| `goto` `click` `fill` `press` `hover` | 操作 |
+| `wait` `wait_animations` | 等 selector／毫秒數；等動畫跑完 |
+| `emulate` | 切換 reduced motion、color scheme、media |
+| `expect_text` `expect_visible` `expect_focused` | 內容與 focus 斷言 |
+| `expect_style` | computed style 斷言（含 pseudo、transition、動畫結束值） |
+| `save_box` `expect_box` | 記下位置大小，之後斷言沒有位移 |
+| `axe` | 無障礙檢查 |
+| `screenshot` | 存檔 |
+
+每個 action 的參數見 [SKILL.md](SKILL.md)。
 
 `wait` 吃 `selector`，或改吃 `{"action": "wait", "ms": 800}` 單純停一段時間——動畫沒有對應 selector 可等時用這個。
 
@@ -150,11 +169,23 @@ python ~/.claude/skills/visual-parity/scripts/parity.py flow \
 | `--video-tail 秒` | `1` | 最後一步跑完後繼續錄的時間，避免收尾動畫被切掉 |
 | `--no-cursor` | 游標預設開啟 | 關掉合成游標。開啟時 `click`／`fill` 前先讓指標走到目標中心，按下時有藍色擴散環 |
 
-影格率是 Playwright screencast 的 **25fps**。判斷「動畫有沒有做對」夠用；要判斷「掉不掉幀」不夠，那種請改用 macOS 內建的 `screencapture -v`。
+影格率是 Playwright screencast 的 **25fps**。判斷「動畫有沒有做對」夠用；要判斷「掉不掉幀」不夠，要另外錄 60fps：macOS 用內建的 `screencapture -v`；Windows 沒有內建等效指令，用 OBS Studio 或 Xbox Game Bar（`Win+Alt+R`，影格率要在設定調成 60），都沒有就把它列為未驗。
+
+### flow --mutate — 確認斷言真的會失敗
+
+```bash
+python ~/.claude/skills/visual-parity/scripts/parity.py flow --steps steps.json --mutate
+```
+
+每個通過的 `expect_*` 會在刻意弄壞的頁面（移除 CSS、清空文字、隱藏元素、移走 focus）上重跑；還是通過的標為 `INVALID` 並讓整次 exit 1。
 
 影片路徑會同時寫進報告開頭與 stdout。
 
 ---
+
+## 報告來源欄位
+
+每份報告開頭與 stdout 都記錄 `commit`、`working tree`（clean／dirty）、比對的 `url` 與執行時間；不在 git repo 內執行時寫 `(not a git repo)`。PR 的 Evidence 用這個 commit 證明「驗的就是要交付的版本」。
 
 ## 給 agent 的使用規範
 
