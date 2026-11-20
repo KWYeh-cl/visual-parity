@@ -829,7 +829,7 @@ def run_snapshot(args):
             el = reg["element"] or {}
             lines.append(f"| {n} | {x0},{y0},{x1 - x0},{y1 - y0} | {reg['density']:.0%} | "
                          f"`{el.get('path', '?')}` {el.get('text', '')} |")
-    with open(args.out, "w") as f:
+    with open(args.out, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 
     failed = mismatch > args.max_mismatch or abs(height_gap) > args.max_height_diff
@@ -873,7 +873,7 @@ def selftest():
 
 def _write(d, name, html):
     path = os.path.join(d, name)
-    open(path, "w").write(html)
+    open(path, "w", encoding="utf-8").write(html)
     return "file://" + path
 
 
@@ -892,7 +892,7 @@ def selftest_visual(d):
     out = os.path.join(d, "v.md")
     rc = run_diff(argparse.Namespace(ref=a, local=b, map=None, widths=None, width=800, height=600,
                                      wait_selector=None, extra_wait=0, out=out))
-    body = open(out).read()
+    body = open(out, encoding="utf-8").read()
     assert rc == 1, "missing content must fail the run"
     assert "img:hero.png" in body.split("missing locally")[-1], "should report the dropped image as missing"
     assert "img:logo.png" not in body.split("missing locally")[-1], "hashed and CDN logo URLs should pair"
@@ -929,16 +929,16 @@ def selftest_flow(d):
         {"action": "axe", "desc": "must fail"},
     ]
     sp = os.path.join(d, "steps.json")
-    json.dump(steps, open(sp, "w"))
+    json.dump(steps, open(sp, "w", encoding="utf-8"))
     out = os.path.join(d, "flow.md")
     run_flow(argparse.Namespace(steps=sp, out=out, headless=True, keep_going=True, video=None,
                                 video_size="1280x720", video_tail=0, cursor=False))
-    rows = [l.split(" | ") for l in open(out).read().splitlines() if re.match(r"^\| \d+ \|", l)]
+    rows = [l.split(" | ") for l in open(out, encoding="utf-8").read().splitlines() if re.match(r"^\| \d+ \|", l)]
     verdict = {int(r[0].strip("| ")): (r[1], r[2]) for r in rows}
     for i, (desc, res) in verdict.items():
         want = "FAIL" if "must fail" in desc else "PASS"
         assert res == want, f"flow step {i} ({desc}) was {res}, expected {want}"
-    assert "image-alt" in open(out).read(), "axe should flag the img without alt"
+    assert "image-alt" in open(out, encoding="utf-8").read(), "axe should flag the img without alt"
 
 
 def selftest_snapshot(d):
@@ -961,7 +961,7 @@ def selftest_snapshot(d):
             ref_image=ref, url=url, selector=None, width=400, height=200, scale=2, threshold=0.1,
             max_mismatch=1.0, max_height_diff=8, cell=16, strict=False, freeze=True,
             wait_selector=None, extra_wait=0, out=out, diff_image=os.path.join(d, "snap.png")))
-        return rc, open(out).read()
+        return rc, open(out, encoding="utf-8").read()
 
     rc, body = snap(a)
     assert rc == 0, "a page should match its own design export at a different scale:\n" + body
