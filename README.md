@@ -21,8 +21,10 @@ git clone https://github.com/KWYeh-cl/visual-parity.git ~/.claude/skills/visual-
 ### 2. 裝相依
 
 ```bash
-pip install playwright && playwright install chromium
+pip install playwright pillow && playwright install chromium
 ```
+
+`pillow` 只有 `snapshot` 會用到。axe-core 已放在 `scripts/vendor/`，不用另外裝。
 
 錄影要輸出 MP4 才需要 ffmpeg，選配：
 
@@ -52,13 +54,16 @@ python ~/.claude/skills/visual-parity/scripts/parity.py selftest
 
 ---
 
-## 三個子指令
+## 子指令
 
 | 子指令 | 用途 | Exit code |
 |---|---|---|
-| `diff` | 比對兩個 URL 的 computed style 落差 | 有落差 `1`，完全一致 `0` |
+| `diff` | 比對兩個 URL 的 computed style 落差，含沒有文字的圖片與 icon | 有落差或缺漏 `1`，完全一致 `0` |
 | `responsive` | 在 375 / 768 / 1440 各跑一次 diff，另查水平溢出 | 同上 |
-| `flow` | 依 JSON 腳本跑互動流程，蒐集 console / network 錯誤，可錄影 | 有步驟失敗 `1` |
+| `flow` | 依 JSON 腳本跑互動流程（含樣式斷言、axe），蒐集 console / network 錯誤，可錄影 | 有步驟失敗 `1` |
+| `snapshot` | 把頁面或區塊截圖，跟設計稿 PNG（Figma 匯出）做像素比對 | 落差超過門檻 `1` |
+
+完整用法見 [SKILL.md](SKILL.md)。
 
 ### diff — 新舊頁面樣式落差
 
