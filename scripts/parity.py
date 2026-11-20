@@ -274,6 +274,84 @@ def save_video(video, out_path):
     return out_path
 
 
+CURSOR_JS = """
+(() => {
+  if (window.__parityCursorInstalled) return;
+  window.__parityCursorInstalled = true;
+  const css = (el, s) => { for (const k in s) el.style.setProperty(k, s[k], 'important'); };
+  const root = () => document.body || document.documentElement;
+  let dot = null;
+  function ensure() {
+    if (dot && dot.isConnected) return dot;
+    const r = root();
+    if (!r) return null;
+    dot = document.createElement('div');
+    css(dot, {
+      position: 'fixed', left: '0', top: '0', width: '18px', height: '18px',
+      'margin-left': '-9px', 'margin-top': '-9px', 'border-radius': '50%',
+      background: 'rgba(255,255,255,.35)', border: '2px solid rgba(18,18,18,.92)',
+      'box-shadow': '0 0 0 1px rgba(255,255,255,.9), 0 1px 3px rgba(0,0,0,.45)',
+      'pointer-events': 'none', 'z-index': '2147483647', opacity: '0',
+      transition: 'opacity .12s linear'
+    });
+    r.appendChild(dot);
+    return dot;
+  }
+  addEventListener('mousemove', (e) => {
+    const d = ensure();
+    if (!d) return;
+    css(d, { opacity: '1', transform: 'translate3d(' + e.clientX + 'px,' + e.clientY + 'px,0)' });
+  }, true);
+  addEventListener('mousedown', (e) => {
+    const r = root();
+    if (!r) return;
+    const ring = document.createElement('div');
+    css(ring, {
+      position: 'fixed', left: e.clientX + 'px', top: e.clientY + 'px',
+      width: '14px', height: '14px', 'margin-left': '-7px', 'margin-top': '-7px',
+      'border-radius': '50%', border: '2px solid rgba(0,120,255,.95)',
+      background: 'rgba(0,120,255,.22)', 'pointer-events': 'none',
+      'z-index': '2147483646',
+      transition: 'transform .45s ease-out, opacity .45s ease-out'
+    });
+    r.appendChild(ring);
+    requestAnimationFrame(() => css(ring, { transform: 'scale(3.2)', opacity: '0' }));
+    setTimeout(() => ring.remove(), 600);
+  }, true);
+})();
+"""
+
+GLIDE_STEPS = 24
+GLIDE_MS = 15
+GLIDE_SETTLE_MS = 120
+
+
+def glide(page, pos, selector):
+    """Walk the pointer to the element before acting on it.
+
+    Playwright dispatches synthetic events with no pointer travel, so a video
+    would show the click landing with no indication of what was clicked. Moving
+    in timed increments gives CURSOR_JS real mousemove events to render.
+    """
+    loc = page.locator(selector).first
+    try:
+        loc.scroll_into_view_if_needed(timeout=15000)
+        box = loc.bounding_box()
+    except Exception:
+        box = None
+    if not box:
+        return
+    tx, ty = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+    sx, sy = pos
+    for i in range(1, GLIDE_STEPS + 1):
+        t = i / GLIDE_STEPS
+        t = t * t * (3 - 2 * t)
+        page.mouse.move(sx + (tx - sx) * t, sy + (ty - sy) * t)
+        page.wait_for_timeout(GLIDE_MS)
+    pos[0], pos[1] = tx, ty
+    page.wait_for_timeout(GLIDE_SETTLE_MS)
+
+
 def run_flow(args):
     steps = json.load(open(args.steps, encoding="utf-8"))
     console_errors, failed_requests, results = [], [], []
@@ -290,7 +368,10 @@ def run_flow(args):
                             record_video_size={"width": w, "height": h},
                             viewport={"width": w, "height": h})
         ctx = browser.new_context(**ctx_opts)
+        if args.cursor:
+            ctx.add_init_script(CURSOR_JS)
         page = ctx.new_page()
+        pos = [0.0, 0.0]
         page.on("console", lambda m: console_errors.append(f"[{m.type}] {m.text}"[:300])
                 if m.type in ("error", "warning") else None)
         page.on("requestfailed", lambda r: failed_requests.append(f"{r.method} {r.url} — {r.failure}"[:300]))
@@ -306,8 +387,12 @@ def run_flow(args):
                     except Exception:
                         pass
                 elif act == "click":
+                    if args.cursor:
+                        glide(page, pos, step["selector"])
                     page.click(step["selector"], timeout=15000)
                 elif act == "fill":
+                    if args.cursor:
+                        glide(page, pos, step["selector"])
                     page.fill(step["selector"], step["value"], timeout=15000)
                 elif act == "press":
                     page.press(step["selector"], step["key"], timeout=15000)
@@ -431,6 +516,7 @@ def main():
     f.add_argument("--video", help="record the run to this path; .mp4 converts via ffmpeg, .webm keeps the native output")
     f.add_argument("--video-size", default="1280x720", help="WxH of both the recording and the viewport (default 1280x720)")
     f.add_argument("--video-tail", type=float, default=1.0, help="seconds to keep recording after the last step so trailing animations finish (default 1)")
+    f.add_argument("--no-cursor", dest="cursor", action="store_false", default=True, help="disable the synthetic pointer (on by default: it travels to each click/fill target and ripples on press)")
 
     sub.add_parser("selftest", help="verify the matcher/differ still work")
 

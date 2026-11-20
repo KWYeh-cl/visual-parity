@@ -111,10 +111,21 @@ python ~/.claude/skills/visual-parity/scripts/parity.py flow \
 - 副檔名 `.mp4` 會在錄完後用 ffmpeg 轉成 H.264（QuickTime 直接開），中間的 webm 自動刪除。**ffmpeg 不存在時不會失敗**，保留 `.webm` 並在 stdout 提示。副檔名寫 `.webm` 則完全不轉檔。
 - `--video-size WxH`（預設 `1280x720`）同時決定錄影解析度與 viewport。
 - `--video-tail <秒>`（預設 `1`）最後一步跑完後繼續錄的時間，避免收尾的動畫被切掉。
+- **游標預設會畫**（`--no-cursor` 關掉）。Playwright 的 click 是直接派發事件、沒有指標移動，錄出來看不出點了哪裡；開了之後每個 `click`／`fill` 前會先讓游標走到目標中心（約 0.4 秒），按下時有藍色擴散環。要讓 reviewer 看懂互動的是哪個元件就加這個。
 - 影格率是 Playwright screencast 的 **25fps**，判斷「動畫有沒有做對」夠用；要判斷「掉不掉幀」不夠，那種要用 macOS `screencapture -v` 錄 60fps。
 - 影片路徑會同時寫進報告開頭與 stdout。
 
 把 flow 的 JSON 存進專案（例如 `e2e/`），下次改版直接重跑，就是回歸測試。
+
+## 驗收交付物規範
+
+被 `/pm-task` 之類的流程當成驗收證據時，除了跑得動，還要符合這些：
+
+- **檔名** `<編號>-<驗收目標英文 slug>[-<寬度>].<png|mp4>`，一律小寫 kebab-case（中文與空白在 CLI／git／PR 連結會出事）。檔名要說「這在驗什麼」不是「這是什麼畫面」：`a3-faq-empty-state-no-results-375.png` ✅；`faq-page-375.png`、`after.png` ❌。
+- **截圖逐張讀過才算檢查**，存檔不算。每張查五件事：元素重疊、內容溢出容器、非預期空白、文字截斷、水平溢出。
+- **動畫與轉場不靠肉眼判**，要有定量斷言：動畫結束後的最終 computed style 與可見性、`transition-duration`／`animation-name` 確實掛上、`prefers-reduced-motion: reduce` 下確實關閉、轉場前後 bounding box 無非預期位移。
+  > 判斷測試：這條斷言重跑一百次結果一樣嗎？不一樣 → 它驗的是手感，不能拿來決定通過或失敗。
+- **錄影**一段只涵蓋一條互動路徑、15 秒內，用 `flow --video`（見上節）。**不要用 `screencapture` 錄互動**——Playwright 派發的是合成事件，macOS 真實指標不會動，錄到的游標停在原地；`screencapture -v` 只在需要判斷掉幀時才用。agent 讀不了影片，唯一觀眾是人。
 
 ## 維護
 

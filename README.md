@@ -143,6 +143,7 @@ python ~/.claude/skills/visual-parity/scripts/parity.py flow \
 | `--video PATH` | 關閉 | 副檔名 `.mp4` 會用 ffmpeg 轉 H.264 並刪除中間的 webm；寫 `.webm` 則不轉檔 |
 | `--video-size WxH` | `1280x720` | 同時決定錄影解析度與 viewport |
 | `--video-tail 秒` | `1` | 最後一步跑完後繼續錄的時間，避免收尾動畫被切掉 |
+| `--no-cursor` | 游標預設開啟 | 關掉合成游標。開啟時 `click`／`fill` 前先讓指標走到目標中心，按下時有藍色擴散環 |
 
 影格率是 Playwright screencast 的 **25fps**。判斷「動畫有沒有做對」夠用；要判斷「掉不掉幀」不夠，那種請改用 macOS 內建的 `screencapture -v`。
 
