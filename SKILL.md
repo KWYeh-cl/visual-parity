@@ -202,6 +202,44 @@ python ~/.claude/skills/visual-parity/scripts/parity.py snapshot \
   > 判斷測試：這條斷言重跑一百次結果一樣嗎？不一樣 → 它驗的是手感，不能拿來決定通過或失敗。
 - **錄影**一段只涵蓋一條互動路徑、15 秒內，用 `flow --video`（見上節）。**不要用 `screencapture` 錄互動**——Playwright 派發的是合成事件，macOS 真實指標不會動，錄到的游標停在原地；`screencapture -v` 只在需要判斷掉幀時才用。agent 讀不了影片，唯一觀眾是人。
 
+## 驗收回報格式
+
+跑完 diff／responsive／flow／snapshot 後，回報**以驗收條件（AC）為主軸，不以工具為主軸**。讀者要知道的是「哪些條件過了、哪些沒過、哪些沒驗到」，不是「flow 跑了幾步」。各子指令的 `.md` 報告是證據，不要整份貼進回報。
+
+```markdown
+## 驗收結果：<功能或頁面名稱>
+
+**結論**：<一句話。例如「3 項通過、1 項失敗、1 項內容不同待確認」>
+
+| AC | 結果 | 證據 | 備註 |
+|---|---|---|---|
+| A1 hero 區塊符合設計稿 | ⚠️ 內容不同 | `snapshot` 2.1%，`a1-hero-vs-figma-1440.png` | 落差都在 CMS 標題，設計稿是假文案 |
+| A2 hover 時 CTA 變色，reduced motion 下不做動畫 | ✅ | `flow` 步驟 3–6（`expect_style`） | |
+| A3 dialog 打開後無 serious 以上無障礙違規 | ❌ | `flow` axe：`color-contrast` ×2 | `.dialog .hint` 對比 3.1:1 |
+
+### 覆蓋率缺口
+- diff 1440px：`skipped-ambiguous` 159、`skipped-textless` 7。<其中有沒有關鍵區塊；有的話補了 `--map` 沒有>
+
+### 沒驗到的
+- <例如：Figma 只有桌機版，375／768 只做了 diff 沒有設計稿比對>
+
+### 附檔
+- `a1-hero-vs-figma-1440.png`、`a2-cta-hover-reduced-motion.mp4`、`parity-flow.md`
+```
+
+規則：
+
+- **結果只有四種**，不要自創：
+  - ✅ 通過：有一個重跑會得到相同結果的證據。
+  - ❌ 失敗：附上失敗的值，例如「expected `#1565c0`, got `rgb(21, 101, 191)`」，不要只寫「顏色不對」。
+  - ⚠️ 內容不同：落差來自資料而不是實作（設計稿假文案、假圖，stage 與 local 的 CMS 資料不同）。必須寫出落差落在哪個元素、為什麼判斷是資料。
+  - ⏭️ 未驗：寫原因，並同時列進「沒驗到的」。
+  > 判斷測試：把這筆落差的資料換成一樣的，落差會消失嗎？會 → ⚠️ 內容不同；不會 → ❌ 失敗。判斷不了 → ❌，並在備註寫出疑點。
+- **證據要能重跑**：寫出子指令、步驟編號或檔名。「看起來沒問題」「截圖確認過」不算證據，除非附上那張截圖，並寫出檢查了哪五件事（見上節）。
+- **覆蓋率缺口不可省略**：`skipped-ambiguous` 或 `skipped-textless` 不是 0 時要列出來。數字是 0 也寫一行「無」，讓讀者知道有看過。
+- **console 錯誤與失敗的 request** 有出現就列在對應 AC 的備註；不屬於任何 AC 的，另列在「沒驗到的」之後，標明「與本次改動無關」或「待確認」。
+- AC 從 spec、issue 或 PLAN.md 抄過來，**編號沿用來源**。沒有正式 AC 時，用「頁面區塊＋狀態」自己編，並在結論註明是自編的。
+
 ## 維護
 
 改過 `parity.py` 後跑 `python scripts/parity.py selftest`，會用內建 fixture 驗證配對與 diff 邏輯仍正確。
